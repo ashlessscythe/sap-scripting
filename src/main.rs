@@ -1,35 +1,10 @@
-/*
-Origin VBS Script:
-
-If Not IsObject(application) Then
-    Set SapGuiAuto  = GetObject("SAPGUI")
-    Set application = SapGuiAuto.GetScriptingEngine
-End If
-If Not IsObject(connection) Then
-    Set connection = application.Children(0)
-End If
-If Not IsObject(session) Then
-    Set session    = connection.Children(0)
-End If
-If IsObject(WScript) Then
-    WScript.ConnectObject session,     "on"
-    WScript.ConnectObject application, "on"
-End If
-session.findById("wnd[0]").maximize
-session.findById("wnd[0]/tbar[0]/okcd").text = "/nfpl9"
-session.findById("wnd[0]").sendVKey 0
-session.findById("wnd[0]/usr/ctxtFKKL1-GPART").text = "12345"
-session.findById("wnd[0]/usr/cmbFKKL1-LSTYP").key = "OPEN"
-session.findById("wnd[0]/usr/cmbFKKL1-LSTYP").setFocus
-session.findById("wnd[0]/tbar[0]/btn[0]").press
-
-And how this would be written as Rust:
-*/
-
 use sap_scripting::*;
+use std::io::stdin;
+mod func;
+use func::*;
 
 fn main() -> crate::Result<()> {
-    // Initialise the environment.
+     // Initialise the environment.
     let com_instance = SAPComInstance::new().expect("Couldn't get COM instance");
     let wrapper = com_instance.sap_wrapper().expect("Couldn't get SAP wrapper");
     let engine = wrapper.scripting_engine().expect("Couldn't get GuiApplication instance");
@@ -44,39 +19,103 @@ fn main() -> crate::Result<()> {
         _ => panic!("expected session, but got something else!"),
     };
 
-    // get user input for tcode to run
-    println!("Enter tcode to run (default: lm01):");
-    let mut tcode = String::new();
-    match std::io::stdin().read_line(&mut tcode) {
-        Ok(_) => {
-            tcode = tcode.trim().to_owned();
-            if tcode.is_empty() {
-                tcode = "lm01".to_owned();
-            }
-            println!("You entered: {}", tcode);
-        },
-        Err(e) => eprintln!("Failed to read line: {}", e),
-    }
-
     if let SAPComponent::GuiMainWindow(wnd) = session.find_by_id("wnd[0]".to_owned())? {
-        // starting transaction
-        eprintln!("Starting transaction");
-        match session.start_transaction(tcode) {
-            Ok(_) => eprintln!("Transaction started"),
-            Err(e) => eprintln!("Error starting transaction: {:?}", e),
-        }
+        // close all modal windows        
+        close_all_modal_windows(&session)?;
 
-        // status message (if any)
-        match wnd.find_by_id("wnd[0]/sbar".to_owned()) {
-            Ok(SAPComponent::GuiStatusbar(statusbar)) => {
-                let text = statusbar.text()?;
-                if text.len() == 0 {
-                    eprintln!("No status message")
-                } else {
-                    eprintln!("Status message: {}", text)
+        // get list
+        let list =  match get_list_from_file("tcodes.txt") {
+            Ok(list) => {
+                eprintln!("Got list: {:?}", list);
+                list
+            },
+            Err(e) => {
+                eprintln!("Error getting list: {:?}", e);
+                vec![]
+            }
+        };
+
+        // ask user if ok to continue
+        println!("found {} tcodes. Continue? (y/n): ", list.len());
+        let mut continue_run = String::new();
+        stdin().read_line(&mut continue_run).expect("Failed to read line");
+        continue_run = continue_run.trim().to_owned();
+        if ["y", "Y", ""].contains(&continue_run.as_str()) {
+            for tcode in list {
+                match start_user_tcode(&session, tcode, Some(false)) {
+                    Ok(_) => {
+                        handle_status_message(&session)?;
+                        eprintln!("Tcode started")
+                    },
+                    Err(e) => eprintln!("Error starting tcode: {:?}", e),
                 }
             }
-            _ => eprintln!("No status bar"),
+        } else {
+            eprintln!("Not runing tcodes. Exiting...");
+            return Ok(());
+        }
+
+        let mut b_continue = handle_status_message(&session)?;
+
+        // read objects on screen
+        if b_continue {
+            match session.find_by_id("wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW".to_owned()) {
+                Ok(SAPComponent::GuiTabStrip(ctab)) => {
+                    let children = ctab.children().into_iter();
+                    println!("Tabs: {}", children.count());
+                }
+                _ => eprintln!("No tab"),
+            }
+        }
+
+        // enter
+        if b_continue { b_continue = handle_status_message(&session)?; }
+
+        if b_continue {
+            match wnd.send_v_key(0) {
+                Ok(_) => eprintln!("VKey sent"),
+                Err(e) => eprintln!("Error sending VKey: {:?}", e),
+            }
+        }
+
+        if b_continue { b_continue = handle_status_message(&session)?; }
+
+        // inside tcode
+        if b_continue {
+            println!("Enter tab number (default: 1): ");
+            match session.find_by_id("wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW".to_owned()) {
+                Ok(SAPComponent::GuiTabStrip(ctab)) => {
+                    let children = ctab.children().into_iter();
+                    println!("Tabs: {}", children.count());
+                }
+                _ => eprintln!("No tab"),
+            }
+        }
+
+        let b_continue = match handle_status_message(&session) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("Error handling status message: {:?}", e);
+                false
+            },
+        }; 
+
+        // ask if go back
+        if b_continue {
+            println!("Go back? (y/n): ");
+            let mut go_back = String::new();
+            stdin().read_line(&mut go_back).expect("Failed to read line");
+            go_back = go_back.trim().to_owned();
+            if ["y", "Y", ""].contains(&go_back.as_str()) {
+                match session.start_transaction("SESSION_MANAGER".to_owned()) {
+                    Ok(_) => {
+                        eprintln!("main menu");
+                        // check if window popup
+                        close_modal_window(&session, None)?;
+                    },
+                    Err(e) => eprintln!("Error going to main menu: {:?}", e),
+                }
+            }
         }
 
     } else {
