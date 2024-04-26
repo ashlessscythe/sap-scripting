@@ -1,7 +1,8 @@
 use sap_scripting::*;
-use std::io::stdin;
 mod func;
 use func::*;
+mod sap_fn;
+use sap_fn::*;
 
 fn main() -> crate::Result<()> {
      // Initialise the environment.
@@ -23,62 +24,87 @@ fn main() -> crate::Result<()> {
         // close all modal windows        
         close_all_modal_windows(&session)?;
 
-        // get list
-        let list =  match get_list_from_file("tcodes.txt") {
-            Ok(list) => {
-                eprintln!("Got list: {:?}", list);
-                list
-            },
-            Err(e) => {
-                eprintln!("Error getting list: {:?}", e);
-                vec![]
+        // ask user if list or single
+        let run_single = prompt_bool("Run single tcode?").expect("error getting input");
+
+        if run_single {
+            // get tcode
+            let tcode = "zmdetpc";
+            match start_user_tcode(&session, tcode.to_owned(), Some(true)) {
+                Ok(_) => {
+                    handle_status_message(&session)?;
+                    eprintln!("Tcode started");
+
+                    // send variant key
+                    send_vkey_main(&wnd, 17)?;
+
+                    // get modal window
+                    let w2 = get_modal_window(&session, &1).expect("Error getting modal window");
+
+                    // clear prev text
+                    set_text_modal(&w2, &1,"/usr/txtENAME-LOW", "")?;
+
+                    // get variant name
+                    let var_name = prompt_str("Variant name").expect("failed to get input");
+                    
+                    // enter variant name
+                    set_text_modal(&w2, &1, "/usr/txtV-LOW", &var_name)?;
+
+                    // send f8 (close modal window)
+                    send_vkey_modal(&w2, 8)?;
+                    handle_status_message(&session)?;
+
+                    // ask for delivery number
+                    let del_num = prompt_str("Delivery number").expect("failed to get input");
+
+                    // enter delivery number
+                    set_ctext_main(&session,"/usr/ctxtS_VBELN-LOW", &del_num)?;
+
+                    // ask execute?
+                    let execute = prompt_bool("Execute?").expect("failed to get input");
+
+                    if execute {
+                        // send vkey
+                        send_vkey_main(&wnd, 8)?;
+                    }
+                    handle_status_message(&session)?;
+
+                    // get value from table
+                    let grid = get_grid_value(&session, &"VEBLN");
+
+                },
+                Err(e) => eprintln!("Error starting tcode: {:?}", e),
+            }
+        } else {
+            // get list
+            let list =  match get_list_from_file("tcodes.txt") {
+                Ok(list) => {
+                    eprintln!("Got list: {:?}", list);
+                    list
+                },
+                Err(e) => {
+                    eprintln!("Error getting list: {:?}", e);
+                    vec![]
+                }
+            };
+            // ask user if ok to continue
+            let run_mult = prompt_bool("Continue running tcodes?").expect("Error getting input");
+                
+            // if bool is true run, else don't
+            if run_mult {
+                for tcode in list {
+                    match start_user_tcode(&session, tcode.to_owned(), Some(false)) {
+                        Ok(_) => {
+                            handle_status_message(&session)?;
+                            eprintln!("Tcode started: {}", tcode)
+                        },
+                        Err(e) => eprintln!("Error starting tcode: {:?}", e),
+                    }
+                }
             }
         };
 
-        // ask user if ok to continue
-        println!("found {} tcodes. Continue? (y/n): ", list.len());
-        let mut continue_run = String::new();
-        stdin().read_line(&mut continue_run).expect("Failed to read line");
-        continue_run = continue_run.trim().to_owned();
-        if ["y", "Y", ""].contains(&continue_run.as_str()) {
-            for tcode in list {
-                match start_user_tcode(&session, tcode, Some(false)) {
-                    Ok(_) => {
-                        handle_status_message(&session)?;
-                        eprintln!("Tcode started")
-                    },
-                    Err(e) => eprintln!("Error starting tcode: {:?}", e),
-                }
-            }
-        } else {
-            eprintln!("Not runing tcodes. Exiting...");
-            return Ok(());
-        }
-
         let mut b_continue = handle_status_message(&session)?;
-
-        // read objects on screen
-        if b_continue {
-            match session.find_by_id("wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW".to_owned()) {
-                Ok(SAPComponent::GuiTabStrip(ctab)) => {
-                    let children = ctab.children().into_iter();
-                    println!("Tabs: {}", children.count());
-                }
-                _ => eprintln!("No tab"),
-            }
-        }
-
-        // enter
-        if b_continue { b_continue = handle_status_message(&session)?; }
-
-        if b_continue {
-            match wnd.send_v_key(0) {
-                Ok(_) => eprintln!("VKey sent"),
-                Err(e) => eprintln!("Error sending VKey: {:?}", e),
-            }
-        }
-
-        if b_continue { b_continue = handle_status_message(&session)?; }
 
         // inside tcode
         if b_continue {
@@ -92,35 +118,22 @@ fn main() -> crate::Result<()> {
             }
         }
 
-        let b_continue = match handle_status_message(&session) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("Error handling status message: {:?}", e);
-                false
-            },
-        }; 
-
         // ask if go back
-        if b_continue {
-            println!("Go back? (y/n): ");
-            let mut go_back = String::new();
-            stdin().read_line(&mut go_back).expect("Failed to read line");
-            go_back = go_back.trim().to_owned();
-            if ["y", "Y", ""].contains(&go_back.as_str()) {
-                match session.start_transaction("SESSION_MANAGER".to_owned()) {
-                    Ok(_) => {
-                        eprintln!("main menu");
-                        // check if window popup
-                        close_modal_window(&session, None)?;
-                    },
-                    Err(e) => eprintln!("Error going to main menu: {:?}", e),
-                }
+        let go_back = prompt_bool("Go back to main menu?").expect("Error getting input");
+        if go_back {
+            match start_user_tcode(&session, "SESSION_MANAGER".to_owned(), Some(false)) {
+                Ok(_) => {
+                    handle_status_message(&session)?;
+                    close_all_modal_windows(&session)?;
+                    eprintln!("Tcode started: session_manager")
+                },
+                Err(e) => eprintln!("Error starting tcode: {:?}", e),
             }
         }
 
     } else {
-        panic!("no window!");
+        eprintln!("No status bar");
     }
-
+    // out
     Ok(())
 }

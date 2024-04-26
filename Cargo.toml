@@ -7,5 +7,7 @@ edition = "2021"
 
 [dependencies]
 sap-scripting = "0.3.8"
+strum = "0.26.2"
+strum_macros = "0.26.2"
 text_io = "0.1.12"
 windows-core = "0.56.0"

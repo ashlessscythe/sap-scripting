@@ -1,5 +1,37 @@
 use sap_scripting::*;
 use std::io::stdin;
+use std::io::{self, Write};
+
+pub fn prompt_bool(prompt: &str) -> std::result::Result<bool, Box<dyn std::error::Error>> {
+    let mut input = String::new();
+    print!("{} (y/n): ", prompt);
+    io::stdout().flush()?; // Make sure the prompt is immediately displayed
+    io::stdin().read_line(&mut input)?;
+    match input.trim().to_lowercase().as_str() {
+        "y" | "yes" | "" => Ok(true),
+        "n" | "no" => Ok(false),
+        _ => Ok(false),
+    }
+}
+
+// get user input for number
+pub fn prompt_number(prompt: &str) -> std::result::Result<i32, Box<dyn std::error::Error>> {
+    let mut input = String::new();
+    print!("{}: ", prompt);
+    io::stdout().flush()?; // Make sure the prompt is immediately displayed
+    io::stdin().read_line(&mut input)?;
+    let num = input.trim().parse::<i32>()?;
+    Ok(num)
+}
+
+// get user str
+pub fn prompt_str(prompt: &str) -> std::result::Result<String, Box<dyn std::error::Error>> {
+    let mut input = String::new();
+    print!("{}: ", prompt);
+    io::stdout().flush()?; // Make sure the prompt is immediately displayed
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_owned())
+}
 
 pub fn get_list_from_file(file_path: &str) -> Result<Vec<String>> {
     let contents = std::fs::read_to_string(file_path)
