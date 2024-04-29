@@ -1,8 +1,8 @@
+use std::vec;
 use sap_scripting::*;
+
 mod func;
 use func::*;
-mod sap_fn;
-use sap_fn::*;
 
 fn main() -> crate::Result<()> {
      // Initialise the environment.
@@ -15,9 +15,18 @@ fn main() -> crate::Result<()> {
         _ => panic!("expected connection, but got something else!"),
     };
     eprintln!("Got connection");
+
     let session = match sap_scripting::GuiConnection_Impl::children(&connection)?.element_at(0)? {
         SAPComponent::GuiSession(session) => session,
         _ => panic!("expected session, but got something else!"),
+    };
+
+    let sess2 = match create_session(&connection, &session, 1) {
+        Ok(sess) => sess,
+        Err(e) => {
+            eprintln!("Error creating session: {:?}", e);
+            return Ok(());
+        }
     };
 
     if let SAPComponent::GuiMainWindow(wnd) = session.find_by_id("wnd[0]".to_owned())? {
@@ -33,7 +42,17 @@ fn main() -> crate::Result<()> {
             match start_user_tcode(&session, tcode.to_owned(), Some(true)) {
                 Ok(_) => {
                     handle_status_message(&session)?;
-                    eprintln!("Tcode started");
+                    eprintln!("Tcode ({}) started", &tcode);
+
+                    let info = get_session_info(&session).expect("Error getting session info");
+                    println!("Current tcode: {:?}", info.transaction());
+                    println!("Current screen: {:?}", info.screen_number());
+                    println!("Current user: {:?}", info.user());
+
+                    let info = get_session_info(&sess2).expect("Error getting sess2 info");
+                    println!("Current tcode: {:?}", info.transaction());
+                    println!("Current screen: {:?}", info.screen_number());
+                    println!("Current user: {:?}", info.user());
 
                     // send variant key
                     send_vkey_main(&wnd, 17)?;
@@ -53,24 +72,31 @@ fn main() -> crate::Result<()> {
                     // send f8 (close modal window)
                     send_vkey_modal(&w2, 8)?;
                     handle_status_message(&session)?;
+                    close_modal_window(&session, None)?;
 
                     // ask for delivery number
-                    let del_num = prompt_str("Delivery number").expect("failed to get input");
+                    let del_num = prompt_str("Delivery number (default blank)").expect("failed to get input");
 
                     // enter delivery number
                     set_ctext_main(&session,"/usr/ctxtS_VBELN-LOW", &del_num)?;
 
                     // ask execute?
-                    let execute = prompt_bool("Execute?").expect("failed to get input");
-
-                    if execute {
-                        // send vkey
-                        send_vkey_main(&wnd, 8)?;
-                    }
+                    prompt_execute(&wnd, 8)?;
                     handle_status_message(&session)?;
 
                     // get value from table
-                    let grid = get_grid_value(&session, &"VEBLN");
+                    let vals = match get_grid_values(&session, "VBELN") {
+                        Ok(vals) => {
+                            eprintln!("Got values: {:?}", vals);
+                            vals
+                        },
+                        Err(e) => {
+                            eprintln!("Error getting values: {:?}", e);
+                            vec![]
+                        }
+                    };
+
+                    println!("Vals count {}", vals.len());
 
                 },
                 Err(e) => eprintln!("Error starting tcode: {:?}", e),
@@ -103,20 +129,6 @@ fn main() -> crate::Result<()> {
                 }
             }
         };
-
-        let mut b_continue = handle_status_message(&session)?;
-
-        // inside tcode
-        if b_continue {
-            println!("Enter tab number (default: 1): ");
-            match session.find_by_id("wnd[0]/usr/tabsTAXI_TABSTRIP_OVERVIEW".to_owned()) {
-                Ok(SAPComponent::GuiTabStrip(ctab)) => {
-                    let children = ctab.children().into_iter();
-                    println!("Tabs: {}", children.count());
-                }
-                _ => eprintln!("No tab"),
-            }
-        }
 
         // ask if go back
         let go_back = prompt_bool("Go back to main menu?").expect("Error getting input");
