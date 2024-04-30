@@ -4,148 +4,149 @@ use sap_scripting::*;
 mod func;
 use func::*;
 
+
 fn main() -> crate::Result<()> {
      // Initialise the environment.
     let com_instance = SAPComInstance::new().expect("Couldn't get COM instance");
     let wrapper = com_instance.sap_wrapper().expect("Couldn't get SAP wrapper");
     let engine = wrapper.scripting_engine().expect("Couldn't get GuiApplication instance");
 
-    let connection = match sap_scripting::GuiApplication_Impl::children(&engine)?.element_at(0)? {
-        SAPComponent::GuiConnection(conn) => conn,
+    let connection = match sap_scripting::GuiApplication_Impl::children(&engine).unwrap().element_at(0) {
+        Ok(SAPComponent::GuiConnection(conn)) => conn,
         _ => panic!("expected connection, but got something else!"),
     };
-    eprintln!("Got connection");
 
-    let session = match sap_scripting::GuiConnection_Impl::children(&connection)?.element_at(0)? {
-        SAPComponent::GuiSession(session) => session,
-        _ => panic!("expected session, but got something else!"),
+    // leave 0 alone
+    let s0 = create_or_get_session(&connection, 0).expect("Error creating session");
+    let w0 = match s0.find_by_id("wnd[0]".to_owned()) {
+        Ok(SAPComponent::GuiMainWindow(w0)) => w0,
+        _ => panic!("expected main window, but got something else!"),
     };
 
-    let sess2 = match create_session(&connection, &session, 1) {
-        Ok(sess) => sess,
-        Err(e) => {
-            eprintln!("Error creating session: {:?}", e);
+    // check if user logged in
+    let info = get_session_info(&s0).expect("Error getting session info");
+    if info.transaction().unwrap() == "S000".to_owned() {
+        // log in
+        let logged_in = log_in_sap(&s0).expect("Error logging in");
+        // if not logged in, exit
+        if !logged_in {
+            eprintln!("Not logged in, exiting");
             return Ok(());
         }
+    }; 
+
+    let s1 = create_or_get_session(&connection, 1).expect("Error creating session");
+    let w1 = match s1.find_by_id("wnd[0]".to_owned()) {
+        Ok(SAPComponent::GuiMainWindow(w1)) => w1,
+        _ => panic!("expected main window, but got something else!"),
+    };
+    // close all modal windows        
+    close_all_modal_windows(&s1)?;
+    
+    let s2 = create_or_get_session(&connection, 2).expect("Error creating session");
+    let w2 = match s2.find_by_id("wnd[0]".to_owned()) {
+        Ok(SAPComponent::GuiMainWindow(w2)) => w2,
+        _ => panic!("expected main window, but got something else!"),
     };
 
-    if let SAPComponent::GuiMainWindow(wnd) = session.find_by_id("wnd[0]".to_owned())? {
-        // close all modal windows        
-        close_all_modal_windows(&session)?;
+    // ask user if list or single
+    let run_single = prompt_bool("Run single tcode?").expect("error getting input");
 
-        // ask user if list or single
-        let run_single = prompt_bool("Run single tcode?").expect("error getting input");
+    if !run_single {
+        // run list
+        let list = get_list_from_file("tcodes.txt").expect("Error getting list from file");
+        run_list(&s2, list, true);
+    } else {
+        // get tcode
+        let tcode = "zmdetpc";
+        let (_, t) = start_user_tcode(&s1, tcode.to_owned(), Some(true)).expect("Error starting tcode");
+        
+        let info = get_session_info(&s1).expect("Error getting session info");
+        println!("Current tcode: {:?}", info.transaction());
+        println!("Current screen: {:?}", info.screen_number());
+        println!("Current user: {:?}", info.user());
+        
+        start_user_tcode(&s2, tcode.to_owned(), Some(false)).expect("Error starting tcode");
+        let info = get_session_info(&s2).expect("Error getting sess info");
+        println!("Current tcode: {:?}", info.transaction());
+        println!("Current screen: {:?}", info.screen_number());
+        println!("Current user: {:?}", info.user());
 
-        if run_single {
-            // get tcode
-            let tcode = "zmdetpc";
-            match start_user_tcode(&session, tcode.to_owned(), Some(true)) {
-                Ok(_) => {
-                    handle_status_message(&session)?;
-                    eprintln!("Tcode ({}) started", &tcode);
-
-                    let info = get_session_info(&session).expect("Error getting session info");
-                    println!("Current tcode: {:?}", info.transaction());
-                    println!("Current screen: {:?}", info.screen_number());
-                    println!("Current user: {:?}", info.user());
-
-                    let info = get_session_info(&sess2).expect("Error getting sess2 info");
-                    println!("Current tcode: {:?}", info.transaction());
-                    println!("Current screen: {:?}", info.screen_number());
-                    println!("Current user: {:?}", info.user());
-
-                    // send variant key
-                    send_vkey_main(&wnd, 17)?;
-
-                    // get modal window
-                    let w2 = get_modal_window(&session, &1).expect("Error getting modal window");
-
-                    // clear prev text
-                    set_text_modal(&w2, &1,"/usr/txtENAME-LOW", "")?;
-
-                    // get variant name
-                    let var_name = prompt_str("Variant name").expect("failed to get input");
-                    
-                    // enter variant name
-                    set_text_modal(&w2, &1, "/usr/txtV-LOW", &var_name)?;
-
-                    // send f8 (close modal window)
-                    send_vkey_modal(&w2, 8)?;
-                    handle_status_message(&session)?;
-                    close_modal_window(&session, None)?;
-
-                    // ask for delivery number
-                    let del_num = prompt_str("Delivery number (default blank)").expect("failed to get input");
-
-                    // enter delivery number
-                    set_ctext_main(&session,"/usr/ctxtS_VBELN-LOW", &del_num)?;
-
-                    // ask execute?
-                    prompt_execute(&wnd, 8)?;
-                    handle_status_message(&session)?;
-
-                    // get value from table
-                    let vals = match get_grid_values(&session, "VBELN") {
-                        Ok(vals) => {
-                            eprintln!("Got values: {:?}", vals);
-                            vals
-                        },
-                        Err(e) => {
-                            eprintln!("Error getting values: {:?}", e);
-                            vec![]
-                        }
-                    };
-
-                    println!("Vals count {}", vals.len());
-
+        // if tcode changed, do something
+        if t != tcode {
+            println!("tcode changed from {} to {}", tcode, t);
+            println!("finding by name");
+            let tab = match w1.find_by_id("wnd[0]/usr/tabsTABSTRIP_TABB1/tabpUCOMM2".to_owned()).expect("Error finding by id") {
+               SAPComponent::GuiTab(tab) => {
+                println!("found tab");
+                    tab 
                 },
-                Err(e) => eprintln!("Error starting tcode: {:?}", e),
-            }
-        } else {
-            // get list
-            let list =  match get_list_from_file("tcodes.txt") {
-                Ok(list) => {
-                    eprintln!("Got list: {:?}", list);
-                    list
+                other => {
+                    print_sap_component_type(&other);
+                    panic!("expected tab, but got something else!");
                 },
-                Err(e) => {
-                    eprintln!("Error getting list: {:?}", e);
-                    vec![]
-                }
             };
-            // ask user if ok to continue
-            let run_mult = prompt_bool("Continue running tcodes?").expect("Error getting input");
-                
-            // if bool is true run, else don't
-            if run_mult {
-                for tcode in list {
-                    match start_user_tcode(&session, tcode.to_owned(), Some(false)) {
-                        Ok(_) => {
-                            handle_status_message(&session)?;
-                            eprintln!("Tcode started: {}", tcode)
-                        },
-                        Err(e) => eprintln!("Error starting tcode: {:?}", e),
-                    }
-                }
-            }
+            tab.select().expect("Error selecting tab");
         };
 
-        // ask if go back
-        let go_back = prompt_bool("Go back to main menu?").expect("Error getting input");
-        if go_back {
-            match start_user_tcode(&session, "SESSION_MANAGER".to_owned(), Some(false)) {
-                Ok(_) => {
-                    handle_status_message(&session)?;
-                    close_all_modal_windows(&session)?;
-                    eprintln!("Tcode started: session_manager")
-                },
-                Err(e) => eprintln!("Error starting tcode: {:?}", e),
-            }
-        }
+        // apply variant
+        let variant_name = prompt_str("Variant name (default blank)").expect("failed to get input");
+        apply_variant(&s1, &variant_name).expect("Error applying variant");
 
-    } else {
-        eprintln!("No status bar");
+        // ask execute?
+        prompt_execute(&w1, 8)?;
+        handle_status_message(&s1)?;
+
+        // get value from table
+        let vals = match get_grid_values(&s1, "VBELN") {
+            Ok(vals) => {
+                eprintln!("Got values: {:?}", vals);
+                vals
+            },
+            Err(e) => {
+                eprintln!("Error getting values: {:?}", e);
+                vec![]
+            }
+        };
+        println!("Vals count {}", vals.len());
+
+    };
+
+    // ask if go back
+    let go_back = prompt_bool("Go back to main menu?").expect("Error getting input");
+    if go_back {
+        match start_user_tcode(&s1, "SESSION_MANAGER".to_owned(), Some(false)) {
+            Ok(_) => {
+                handle_status_message(&s1)?;
+                close_all_modal_windows(&s1)?;
+                eprintln!("Tcode started: session_manager")
+            },
+            Err(e) => eprintln!("Error starting tcode: {:?}", e),
+        }
     }
     // out
     Ok(())
+}
+
+fn run_list(session: &GuiSession, list: Vec<String>, prompt: bool) {
+    let run_mult: bool;
+    if prompt { 
+        // ask user if ok to continue
+        run_mult = prompt_bool("Continue running tcodes?").expect("Error getting input");
+    } else {
+        run_mult = true;
+    }
+                
+    // if bool is true run, else don't
+    if run_mult {
+        for tcode in list {
+            match start_user_tcode(&session, tcode.to_owned(), Some(false)) {
+                Ok(_) => {
+                    handle_status_message(&session).expect("Error handling status message");
+                    eprintln!("Tcode started: {}", tcode)
+                },
+                Err(e) => eprintln!("Error starting tcode: {:?}", e),
+            }
+        }
+    }
 }

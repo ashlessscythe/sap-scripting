@@ -1,6 +1,14 @@
 use sap_scripting::*;
 use std::io::stdin;
 use std::io::{self, Write};
+use rpassword;
+
+pub fn prompt_pass(prompt: &str) -> std::result::Result<String, Box<dyn std::error::Error>> {
+    print!("{}: ", prompt);
+    io::stdout().flush()?; // Make sure the prompt is immediately displayed
+    let pass = rpassword::read_password()?;
+    Ok(pass)
+}
 
 pub fn prompt_bool(prompt: &str) -> std::result::Result<bool, Box<dyn std::error::Error>> {
     let mut input = String::new();
@@ -94,7 +102,19 @@ pub fn close_modal_window(session: &GuiSession, n_wnd: Option<i32>) -> Result<St
     }
 }
 
-pub fn start_user_tcode(session: &GuiSession, default_tcode: String, require_input: Option<bool>) -> Result<()> {
+pub fn print_sap_component_type(component: &SAPComponent) {
+    match component {
+        SAPComponent::GuiTabStrip(_) => println!("found tabstrip"),
+        SAPComponent::GuiGridView(_) => println!("found gridview"),
+        SAPComponent::GuiUserArea(_) => println!("found user area"),
+        SAPComponent::GuiVComponent(_) => println!("found v component"),
+        SAPComponent::GuiComponent(_) => println!("found component"),
+        // Add more match arms for other variants of SAPComponent
+        _ => println!("found unknown component"),
+    }
+}
+
+pub fn start_user_tcode(session: &GuiSession, default_tcode: String, require_input: Option<bool>) -> Result<((), String)> {
     // close any window if it exists
     match close_modal_window(&session, None) {
         Ok(msg) => eprintln!("{}", msg),
@@ -121,24 +141,51 @@ pub fn start_user_tcode(session: &GuiSession, default_tcode: String, require_inp
         tcode = default_tcode;
     }
 
-    if let SAPComponent::GuiMainWindow(wnd) = session.find_by_id("wnd[0]".to_owned())? {
-        println!("Got window id: {}", wnd.id()?);
+    // close modal windows if found
+    close_all_modal_windows(session)?;
 
-        // starting transaction
-        eprintln!("Starting transaction");
-        match session.start_transaction(tcode) {
-            Ok(_) => {
-                eprintln!("Transaction started");
-                Ok(())
-            },
-            Err(e) => {
-                eprintln!("Error starting transaction: {:?}", e);
-                Err(e)
-            },
-        }
-    } else {
-        panic!("no window!");
+    // starting transaction
+    eprintln!("Starting transaction");
+    match session.start_transaction(tcode.clone()) {
+        Ok(_) => {
+            eprintln!("Transaction started");
+            Ok(((), tcode))
+        },
+        Err(e) => {
+            eprintln!("Error starting transaction: {:?}", e);
+            Err(e)
+        },
     }
+}
+
+// apply user variant
+pub fn apply_variant(session: &GuiSession, var: &str) -> Result<()> {
+    let wnd = get_main_window(session).expect("Error getting main window");
+
+    // if blank var, return
+    if var.is_empty() {
+        println!("No variant specified, skipping...");
+        return Ok(());
+    };
+
+    // send variant key
+    send_vkey_main(&wnd, 17)?;
+
+    // get modal window
+    let modal_window = get_modal_window(session, &1).expect("Error getting modal window");
+
+    // clear prev text
+    set_text_modal(&modal_window, &1,"/usr/txtENAME-LOW", "")?;
+
+    // enter variant name
+    set_text_modal(&modal_window, &1, "/usr/txtV-LOW", var)?;
+
+    // send f8 (close modal window)
+    send_vkey_modal(&modal_window, 8)?;
+    handle_status_message(session)?;
+    close_modal_window(session, None)?;
+
+    Ok(())
 }
 
 pub fn prompt_execute(wnd: &GuiMainWindow, vkey: i16) -> Result<()> {
@@ -214,6 +261,30 @@ pub fn set_text_main(session: &GuiSession, field_id: &str, text: &str) -> Result
     }
 }
 
+// set password field
+pub fn set_pass_main(session: &GuiSession, field_id: &str, text: &str) -> Result<()> {
+    let find_id = format!("wnd[0]{}", field_id); // field id should include the /usr/ prefix
+    match session.find_by_id(find_id.to_owned()) {
+        Ok(SAPComponent::GuiPasswordField(pass)) => {
+            match pass.set_text(text.to_owned()) {
+                Ok(_) => {
+                    eprintln!("Text set for field: {}", field_id);
+                    Ok(())
+                },
+                Err(e) => {
+                    eprintln!("Error setting text for field {}: {:?}", field_id, e);
+                    Err(e)
+
+                }
+            }
+        },
+        _ => {
+            eprintln!("No text field found with ID {}", field_id);
+            Ok(())
+        }
+    }
+}
+
 pub fn set_ctext_main(session: &GuiSession, field_id: &str, text: &str) -> Result<()> {
     let find_id = format!("wnd[0]{}", field_id); // field id should include the /usr/ prefix
     match session.find_by_id(find_id.to_owned()) {
@@ -263,7 +334,15 @@ pub fn send_vkey_modal(wnd: &GuiModalWindow, key: i16) -> Result<()> {
     }
 }
 
-// get wnd
+// get main wnd
+pub fn get_main_window(session: &GuiSession) -> std::result::Result<GuiMainWindow, String> {
+    match session.find_by_id("wnd[0]".to_owned()) {
+        Ok(SAPComponent::GuiMainWindow(wnd)) => Ok(wnd),
+        _ => Err("expected main window, but got something else!".to_owned()),
+    }
+}
+
+// get modal wnd
 pub fn get_modal_window(session: &GuiSession, wnd_id: &i32) -> std::result::Result<GuiModalWindow, String> {
     match session.find_by_id(format!("wnd[{}]", wnd_id).to_owned()) {
         Ok(SAPComponent::GuiModalWindow(wnd)) => Ok(wnd),
@@ -298,26 +377,74 @@ pub fn get_grid_values(session: &GuiSession, hdr: &str) -> std::result::Result<V
     }
 }
 
-// create a new session
-pub fn create_session(connection: &GuiConnection, session: &GuiSession, idx: i32) -> std::result::Result<GuiSession, String> {
-    // Attempt to create a session using the connection
-    let creation_result = sap_scripting::GuiSession_Impl::create_session(session);
-    
-    // Handle the result of the session creation attempt
-    match creation_result {
-        Ok(_) => {
-            // If the session is successfully created, attempt to retrieve it
-            // Assuming the new session is always added at the end
-            let children = sap_scripting::GuiConnection_Impl::children(connection)
-                .map_err(|e| format!("Failed to retrieve children after session creation: {:?}", e))?;
-            
-            // Get the new session
-            let new_session = match children.element_at(idx) {
-                Ok(SAPComponent::GuiSession(session)) => Ok(session),
-                _ => return Err("Failed to retrieve new session".to_owned()),
-            };
-            return new_session;
+// get or create session @ idx
+pub fn create_or_get_session(connection: &GuiConnection, idx: i32) -> std::result::Result<GuiSession, String> {
+    let children = sap_scripting::GuiConnection_Impl::children(connection)
+        .map_err(|e| format!("Failed to retrieve children: {:?}", e))?;
+
+    // Try to get the session at the specified index
+    match children.element_at(idx) {
+        Ok(SAPComponent::GuiSession(sess)) => {
+            println!("Returning existing session at index {}", idx);
+            Ok(sess)  // Assuming GuiSession is cloneable. If not, you'll need to adjust this.
         },
-        Err(e) => Err(format!("Failed to create a new session: {:?}", e)),
+        _ => {
+            // If no session at that index, attempt to create a new session
+            let sess = match sap_scripting::GuiConnection_Impl::children(connection).unwrap().element_at(0) {
+                Ok(SAPComponent::GuiSession(sess)) => sess,
+                _ => panic!("Error getting initial session"),
+            };
+            sap_scripting::GuiSession_Impl::create_session(&sess)
+                .map_err(|e| format!("Failed to create a new session: {:?}", e))?;
+
+            // wait for new session to be created
+            std::thread::sleep(std::time::Duration::from_secs(3));
+
+            // Assume new session is created at the end of the list
+            let new_children = sap_scripting::GuiConnection_Impl::children(connection)
+                .map_err(|e| format!("Failed to retrieve children after session creation: {:?}", e))?;
+
+            println!("New children count: {}", new_children.count().unwrap());
+
+            match new_children.element_at(new_children.count().unwrap() - 1) {
+                Ok(SAPComponent::GuiSession(new_sess)) => {
+                    println!("Returning new session created at index {}", new_children.count().unwrap() - 1);
+                    Ok(new_sess)  // Adjust if GuiSession is not cloneable
+                },
+                _ => Err("Failed to retrieve new session".to_owned()),
+            }
+        }
     }
+}
+
+// log in
+pub fn log_in_sap(session: &GuiSession) -> Result<bool> {
+    let wnd = match session.find_by_id("wnd[0]".to_owned()) {
+        Ok(SAPComponent::GuiMainWindow(session)) => session,
+        _ => panic!("expected main window, but got something else!"),
+    };
+    // login ask for user and pass
+    println!("Not logged in, please enter user and pass");
+    let user = prompt_str("User").expect("Error getting input");
+    let pass = prompt_pass("Password").expect("Error getting input");
+    set_text_main(session, "/usr/txtRSYST-MANDT", &"025".to_owned())?;
+    set_text_main(session, "/usr/txtRSYST-BNAME", &user)?;
+    set_pass_main(session, "/usr/pwdRSYST-BCODE", &pass)?;
+    set_text_main(session, "/usr/txtRSYST-LANGU", &"EN".to_owned())?;
+    send_vkey_main(&wnd, 0).expect("Error sending vkey");
+    let logged_in = match handle_status_message(session) {
+        Ok(true) => {
+            eprintln!("Logged in");
+            true
+        },
+        Ok(false) => {
+            eprintln!("Error logging in");
+            false
+        },
+        Err(e) => {
+            eprintln!("Error logging in: {:?}", e);
+            false
+        },
+    };
+    Ok(logged_in)
 }
