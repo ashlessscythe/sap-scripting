@@ -1,5 +1,7 @@
-use std::vec;
+use std::{ops::Deref, os::windows::process, sync::Arc, vec};
 use sap_scripting::*;
+use test_func::{multi_tcode, run_test_tcode};
+use tokio::runtime::Runtime;
 
 mod test_func;
 
@@ -17,8 +19,8 @@ fn main() -> crate::Result<()> {
         _ => panic!("expected connection, but got something else!"),
     };
 
-    // leave 0 alone
     let s0 = create_or_get_session(&connection, 0).expect("Error creating session");
+
     let w0 = match s0.find_by_id("wnd[0]".to_owned()) {
         Ok(SAPComponent::GuiMainWindow(w0)) => w0,
         _ => panic!("expected main window, but got something else!"),
@@ -44,22 +46,28 @@ fn main() -> crate::Result<()> {
     // close all modal windows        
     close_all_modal_windows(&s1)?;
     
-    let s2 = create_or_get_session(&connection, 2).expect("Error creating session");
-    let w2 = match s2.find_by_id("wnd[0]".to_owned()) {
-        Ok(SAPComponent::GuiMainWindow(w2)) => w2,
-        _ => panic!("expected main window, but got something else!"),
-    };
-
     // ask user if list or single
     let run_test = prompt_bool("Run test tcode?").expect("error getting input");
 
+    let conn = Arc::new(connection);
+
     if run_test {
         // test stuff?
-        test_func::run_test_tcode(s2)?;
+        let result = async {
+            test_func::run_test_tcode(s1.into(), conn, 1).await.expect("Error running test tcode");
+        };
+        // run block using executor
+        let mut rt = Runtime::new().unwrap();
+        rt.block_on(result);
+
     } else {
-        // run list
-        let list = get_list_from_file("tcodes.txt").expect("Error getting list from file");
-        run_list(&s2, list, true);
+        let r = async {
+            process_session(conn, 1).await.expect("Error processing session");
+        };
+
+        // run block using executor
+        let mut rt = Runtime::new().unwrap();
+        rt.block_on(r);
     };
 
     Ok(())
@@ -81,9 +89,26 @@ fn run_list(session: &GuiSession, list: Vec<String>, prompt: bool) {
                 Ok(_) => {
                     handle_status_message(&session).expect("Error handling status message");
                     eprintln!("Tcode started: {}", tcode)
+                    
                 },
                 Err(e) => eprintln!("Error starting tcode: {:?}", e),
             }
         }
+    }
+}
+
+// async process session
+async fn process_session(connection: Arc<GuiConnection>, idx: i32) -> Result<()> {
+    let session_result = create_or_get_session_async(&connection, idx).await;
+    match session_result {
+        Ok(session) => {
+            // Use session here
+            multi_tcode(connection, 1).await.expect("Error running multi tcode");
+            Ok(())
+        },
+        _ => {
+            eprint!("Error creating session");
+            Ok(())
+        },
     }
 }

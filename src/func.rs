@@ -1,8 +1,10 @@
 use sap_scripting::*;
 use std::io::stdin;
 use std::io::{self, Write};
+use csv::Reader;
 use chrono::prelude::*;
 use rpassword;
+use std::sync::Arc;
 
 pub fn lvalue(s: Option<String>) -> String {
     // timestamp with s as suffix
@@ -10,9 +12,17 @@ pub fn lvalue(s: Option<String>) -> String {
         Some(s) => s,
         None => "".to_string(),
     };
-    let now: chrono::DateTime<chrono::Local> = chrono::Local::now();
+    let now: DateTime<Local> = Local::now();
     let ts = now.format("%Y%m%d%H%M%S").to_string();
     format!("{}-{}", ts, s)
+}
+
+// go back
+pub fn back_screen(wnd: &GuiMainWindow) -> Result<()> {
+    for _ in 0..5 {
+        send_vkey_main(wnd, 3).expect("Error sending vkey");
+    }
+    Ok(())
 }
 
 pub fn prompt_pass(prompt: &str) -> std::result::Result<String, Box<dyn std::error::Error>> {
@@ -57,6 +67,17 @@ pub fn get_list_from_file(file_path: &str) -> Result<Vec<String>> {
     let contents = std::fs::read_to_string(file_path)
         .expect("Something went wrong reading the file");
     let list: Vec<String> = contents.lines().map(|s| s.to_string()).collect();
+    Ok(list)
+}
+
+// get list from csv specific column
+pub fn get_list_from_csv(file_path: &str, col: usize) -> Result<Vec<String>> {
+    let mut rdr = csv::Reader::from_path(file_path).expect("Error reading csv");
+    let mut list = Vec::new();
+    for result in rdr.records() {
+        let record = result.expect("Error reading record");
+        list.push(record[col].to_string());
+    }
     Ok(list)
 }
 
@@ -126,6 +147,56 @@ pub fn print_sap_component_type(component: &SAPComponent) {
     }
 }
 
+// start threaded tcode
+pub async fn start_tcode_async(session: &GuiSession, tcode: &String) -> Result<()> {
+    // close any window if it exists
+    match close_modal_window(&session, None) {
+        Ok(msg) => eprintln!("{}", msg),
+        Err(e) => eprintln!("Error closing window: {:?}", e),
+    }
+
+    // close modal windows if found
+    close_all_modal_windows(session)?;
+
+    // starting transaction
+    eprintln!("Starting transaction");
+    match session.start_transaction(tcode.to_owned()) {
+        Ok(_) => {
+            eprintln!("Transaction started");
+            Ok(())
+        },
+        Err(e) => {
+            eprintln!("Error starting transaction: {:?}", e);
+            Err(e)
+        },
+    }
+}
+
+// tcode wit no user input
+pub fn start_tcode(session: &GuiSession, tcode: String) -> Result<()> {
+    // close any window if it exists
+    match close_modal_window(&session, None) {
+        Ok(msg) => eprintln!("{}", msg),
+        Err(e) => eprintln!("Error closing window: {:?}", e),
+    }
+
+    // close modal windows if found
+    close_all_modal_windows(session)?;
+
+    // starting transaction
+    eprintln!("Starting transaction");
+    match session.start_transaction(tcode.clone()) {
+        Ok(_) => {
+            eprintln!("Transaction started");
+            Ok(())
+        },
+        Err(e) => {
+            eprintln!("Error starting transaction: {:?}", e);
+            Err(e)
+        },
+    }
+}
+// tcode with user input
 pub fn start_user_tcode(session: &GuiSession, default_tcode: String, require_input: Option<bool>) -> Result<((), String)> {
     // close any window if it exists
     match close_modal_window(&session, None) {
@@ -330,7 +401,7 @@ pub fn send_vkey_main(wnd: &GuiMainWindow, key: i16) -> Result<()> {
         },
         Err(e) => {
             eprintln!("Error sending key {}: {:?}", key, e);
-            Err(e)
+            Ok(())
         }
     }
 }
@@ -348,6 +419,29 @@ pub fn send_vkey_modal(wnd: &GuiModalWindow, key: i16) -> Result<()> {
     }
 }
 
+// press button
+pub fn press_tbar_button_main(session: &GuiSession, tbar: i32, btn: i32) -> Result<()> {
+    let find_id = format!("wnd[0]/tbar[{}]/btn[{}]", tbar, btn);
+    match session.find_by_id(find_id.to_owned()) {
+        Ok(SAPComponent::GuiButton(btn)) => {
+            match btn.press() {
+                Ok(_) => {
+                    eprintln!("Button pressed: {}", find_id);
+                    Ok(())
+                },
+                Err(e) => {
+                    eprintln!("Error pressing button {}: {:?}", find_id, e);
+                    Err(e)
+                }
+            }
+        },
+        _ => {
+            eprintln!("No button found with ID {}", find_id);
+            Ok(())
+        }
+    }
+}
+
 // get main wnd
 pub fn get_main_window(session: &GuiSession) -> std::result::Result<GuiMainWindow, String> {
     match session.find_by_id("wnd[0]".to_owned()) {
@@ -361,6 +455,17 @@ pub fn get_modal_window(session: &GuiSession, wnd_id: &i32) -> std::result::Resu
     match session.find_by_id(format!("wnd[{}]", wnd_id).to_owned()) {
         Ok(SAPComponent::GuiModalWindow(wnd)) => Ok(wnd),
         _ => Err("expected modal window, but got something else!".to_owned()),
+    }
+}
+
+// get tab
+pub fn get_tab(session: &GuiSession, tab_id: &str) -> std::result::Result<GuiTab, String> {
+    match session.find_by_id(format!("wnd[0]{}", tab_id.to_owned())) {
+        Ok(SAPComponent::GuiTab(tab)) => {
+            println!("Got tab");
+            Ok(tab)
+        },
+        _ => Err("expected tab, but got something else!".to_owned()),
     }
 }
 
@@ -388,6 +493,53 @@ pub fn get_grid_values(session: &GuiSession, hdr: &str) -> std::result::Result<V
             Ok(vals)
         },
         Err(e) => Err(format!("Error getting grid: {:?}", e)),
+    }
+}
+
+// get text from id
+pub fn get_text_main(session: &GuiSession, field_id: &str) -> std::result::Result<String, String> {
+    let find_id = format!("wnd[0]{}", field_id); // field id should include the /usr/ prefix
+    println!("getting text from id: {}", find_id);
+    match session.find_by_id(find_id.to_owned()) {
+        Ok(SAPComponent::GuiTextField(txt)) => {
+            println!("Got text field");
+            let text = sap_scripting::GuiTextField_Impl::displayed_text(&txt)
+                .map_err(|_| "Error getting text".to_string())?;
+            Ok(text)
+        },
+        _ => Err("No text field found".to_string()),
+    }
+}
+
+// async create or get session
+pub async fn create_or_get_session_async(connection: &Arc<GuiConnection>, idx: i32) -> std::result::Result<GuiSession, String> {
+    let children = sap_scripting::GuiConnection_Impl::children(&**connection)
+        .map_err(|e| format!("Failed to retrieve children: {:?}", e))?; // get or create session @ idx
+    match children.element_at(idx) {
+        Ok(SAPComponent::GuiSession(sess)) => {
+            println!("Returning existing session at index {}", idx);
+            Ok(sess)  // Assuming GuiSession is cloneable. If not, you'll need to adjust this.
+        },
+        _ => {
+            // If no session at that index, attempt to create a new session
+            let sess = match sap_scripting::GuiConnection_Impl::children(&**connection).unwrap().element_at(0) {
+                Ok(SAPComponent::GuiSession(sess)) => sess,
+                _ => panic!("Error getting initial session"),
+            };
+            sap_scripting::GuiSession_Impl::create_session(&sess)
+                .map_err(|e| format!("Failed to create a new session: {:?}", e))?; // wait for new session to be created
+            std::thread::sleep(std::time::Duration::from_secs(3)); // Assume new session is created at the end of the list
+            let new_children = sap_scripting::GuiConnection_Impl::children(&**connection)
+                .map_err(|e| format!("Failed to retrieve children after session creation: {:?}", e))?;
+            println!("New children count: {}", new_children.count().unwrap());
+            match new_children.element_at(new_children.count().unwrap() - 1) {
+                Ok(SAPComponent::GuiSession(new_sess)) => {
+                    println!("Returning new session created at index {}", new_children.count().unwrap() - 1);
+                    Ok(new_sess)  // Adjust if GuiSession is not cloneable
+                },
+                _ => Err("Failed to retrieve new session".to_owned()),
+            }
+        }
     }
 }
 
@@ -461,4 +613,52 @@ pub fn log_in_sap(session: &GuiSession) -> Result<bool> {
         },
     };
     Ok(logged_in)
+}
+
+
+// get grid values for headers to vec
+pub fn get_grid_values_for_headers(session: &GuiSession, headers: &[String]) -> Result<Vec<Vec<String>>> {
+    let mut full = Vec::new();
+    headers.iter().for_each(|h| {
+        let vals = match get_grid_values(session, h) {
+            Ok(vals) => {
+                println!("found {} values for header {}.", vals.len(), h);
+                vals
+            },
+            Err(e) => {
+                eprintln!("Error getting values: {:?}", e);
+                vec![]
+            }
+        };
+        full.push(vals);
+        println!("Vals count as of header {} is {}", h, full.last().unwrap().len());
+    });
+    Ok(full)
+}
+
+// save grid to csv
+pub fn save_grid_to_csv(data: Vec<Vec<String>>, headers: &[String], tcode: &str, filename: Option<String>) -> Result<String> {
+    // write full to csv
+    let mut csv = String::new();
+    for i in 0..data[0].len() {
+        for j in 0..data.len() {
+            csv.push_str(&data[j][i]);
+            csv.push(',');
+        }
+        csv.push('\n');
+    }
+
+    // header row with newline
+    let header_row = format!("{},\n", headers.join(","));
+    csv.insert_str(0, &header_row);
+    let file_name = match filename {
+        Some(f) => f,
+        None => format!("{}.csv", lvalue(Some(tcode.to_owned()))),
+    };
+    std::fs::write(&file_name, csv).expect("Error writing to file");
+
+    // close file
+    println!("Wrote to file: {}", &file_name);
+
+    Ok(file_name)
 }

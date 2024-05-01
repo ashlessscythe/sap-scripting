@@ -1,8 +1,33 @@
 use sap_scripting::*;
 use crate::func::*;
-use std::fs;
+use std::{collections::btree_map::Keys, fs};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use tokio::task;
 
-pub fn run_test_tcode(session: GuiSession) -> Result<()> {
+// start async
+
+pub async fn multi_tcode(conn: Arc<GuiConnection>, starting_idx: i32) -> Result<()> {
+    let s1 = Arc::new(create_or_get_session_async(&conn, 1).await.expect("Error creating session"));
+    let s2 = Arc::new(create_or_get_session_async(&conn, 2).await.expect("Error creating session"));
+
+    loop {
+
+        let con1 = conn.clone();
+        let con2 = conn.clone();
+        run_test_tcode(s1.clone(), con1, starting_idx + 1).await.expect("Error running tcode");
+        run_test_tcode(s2.clone(), con2, starting_idx + 2).await.expect("Error running tcode");
+
+        // ask user if redo
+        let redo = prompt_bool("Redo?").expect("Error getting input");
+        if !redo {
+            break;
+        }
+    }
+    Ok(())
+}
+
+pub async fn run_test_tcode(session: Arc<GuiSession>, con: Arc<GuiConnection>, idx: i32) -> Result<()> {
     let tcode = "zmdetpc";
     let (_, t) = start_user_tcode(&session, tcode.to_owned(), Some(false)).expect("Error starting tcode");
         
@@ -46,37 +71,54 @@ pub fn run_test_tcode(session: GuiSession) -> Result<()> {
         "CHILD".to_owned(),
         "PALLET".to_owned(),
     ];
-    let mut full = Vec::new();
-    headers.iter().for_each(|h| {
-        let vals = match get_grid_values(&session, h) {
-            Ok(vals) => {
-                // write to file
-                println!("found {} values for header {}.", vals.len(), h);
-                vals
-                  
-            },
-            Err(e) => {
-                eprintln!("Error getting values: {:?}", e);
-                vec![]
+    let full = get_grid_values_for_headers(&session, &headers).expect("Error getting grid values");
+    save_grid_to_csv(full.clone(), &headers, &tcode, None).expect("Error saving grid to csv");
+
+    // create another session to lookup each value
+    // read from csv column 1
+    let list = &full[0].clone();
+    println!("list has {} items", list.len());
+
+    // create another session
+    let s2 = create_or_get_session_async(&con.to_owned(), idx + 1).await.expect("Error creating session");
+    let w2 = get_main_window(&s2).expect("Error getting main window");
+
+    // let start = prompt_bool("Start tcodes?").expect("Error getting input");
+    let start = true;
+    if start {
+        // iterate through first 10
+        list.iter().take(3).for_each(|v| {
+            match start_user_tcode(&s2, "VL03N".to_owned(), Some(false)) {
+                Ok(_) => {
+                    handle_status_message(&s2).expect("Error handling status message");
+                    eprintln!("Tcode started: {}", v);
+                    set_ctext_main(&s2, &"/usr/ctxtLIKP-VBELN".to_owned(), &v).expect("Error setting text");
+                    send_vkey_main(&w2, 0).expect("Error sending vkey");
+                    let tab_id = r#"/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01"#.to_owned();
+                    let tab = get_tab(&s2, &tab_id).expect("Error getting tab");
+                    tab.select().expect("Error selecting tab");
+                    println!("Selected tab");
+                    // count of packages
+                    let packages_field = r#"/usr/tabsTAXI_TABSTRIP_OVERVIEW/tabpT\01/ssubSUBSCREEN_BODY:SAPMV50A:1102/txtLIKP-ANZPK"#.to_owned();
+                    let packages = get_text_main(&s2, &packages_field).expect("Error getting text");
+                    println!("Packages for {} is {}", v, packages);
+                    // header
+                    press_tbar_button_main(&s2, 1, 8).expect("Error pressing button");   // hat button
+                    let header_tab = r#"/usr/tabsTAXI_TABSTRIP_HEAD/tabpT\07"#.to_owned();
+                    get_tab(&s2, &header_tab).expect("Error getting tab").select().expect("Error selecting tab");
+                    println!("Selected header tab");
+                    let text_box = r#"/usr/tabsTAXI_TABSTRIP_HEAD/tabpT\07/ssubSUBSCREEN_BODY:SAPMV50A:2110/txtLIKP-LIFEX"#.to_owned();
+                    let dlv = get_text_main(&s2, &text_box.to_owned()).expect("Error getting text");
+                    println!("delivery {} ext {}", v, dlv);
+                },
+                Err(e) => eprintln!("Error starting tcode: {:?}", e),
             }
-        };
-        full.push(vals);
-        println!("Vals count as of header {} is {}", h, full.last().unwrap().len());
-    });
-    // write full to csv
-    let mut csv = String::new();
-    for i in 0..full[0].len() {
-        for j in 0..full.len() {
-            csv.push_str(&full[j][i]);
-            csv.push(',');
-        }
-        csv.push('\n');
-    }
-    // header row with newline
-    let header_row = format!("{},\n", headers.join(","));
-    csv.insert_str(0, &header_row);
-    let file_name = format!("{}.csv", lvalue(Some(tcode.to_owned())));
-    fs::write(file_name, csv).expect("Error writing to file");
+        });
+    } // end start
+
+    // go back
+    back_screen(&w1).expect("Error going back");
+    back_screen(&w2).expect("Error going back");
 
     Ok(())
 
