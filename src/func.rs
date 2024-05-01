@@ -1,7 +1,19 @@
 use sap_scripting::*;
 use std::io::stdin;
 use std::io::{self, Write};
+use chrono::prelude::*;
 use rpassword;
+
+pub fn lvalue(s: Option<String>) -> String {
+    // timestamp with s as suffix
+    let s = match s {
+        Some(s) => s,
+        None => "".to_string(),
+    };
+    let now: chrono::DateTime<chrono::Local> = chrono::Local::now();
+    let ts = now.format("%Y%m%d%H%M%S").to_string();
+    format!("{}-{}", ts, s)
+}
 
 pub fn prompt_pass(prompt: &str) -> std::result::Result<String, Box<dyn std::error::Error>> {
     print!("{}: ", prompt);
@@ -166,7 +178,9 @@ pub fn apply_variant(session: &GuiSession, var: &str) -> Result<()> {
     if var.is_empty() {
         println!("No variant specified, skipping...");
         return Ok(());
-    };
+    } else {
+        println!("Applying variant: {}", var);
+    }
 
     // send variant key
     send_vkey_main(&wnd, 17)?;
