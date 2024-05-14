@@ -4,10 +4,85 @@ use std::{collections::btree_map::Keys, fs};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tokio::task;
+use std::marker::{Sync, Send};
+
+use rayon::prelude::*;
+use std::result::Result;
+
+struct SafeGuiSession {
+    inner: Mutex<GuiSession>,
+}
+
+impl SafeGuiSession {
+    fn new(session: GuiSession) -> Self {
+        SafeGuiSession {
+            inner: Mutex::new(session),
+        }
+    }
+}
+
+unsafe impl Sync for SafeGuiSession {}
+unsafe impl Send for SafeGuiSession {}
+
+// parallel
+pub fn parallel_tcodes(conn: &GuiConnection, starting_idx: i32) -> Result<(), String> {
+    let idx = starting_idx + 1;
+
+    let s1 = SafeGuiSession::new(create_or_get_session(conn, idx).map_err(|e| e.to_string())?);
+    let s2 = SafeGuiSession::new(create_or_get_session(conn, idx + 1).map_err(|e| e.to_string())?);
+    let s3 = SafeGuiSession::new(create_or_get_session(conn, idx + 2).map_err(|e| e.to_string())?);
+
+    let sessions = vec![s1, s2, s3];
+    let tcodes = vec!["zmdesnr".to_string(), "zmdetpc".to_string(), "mmbe".to_string()];
+
+    let arc_sessions = Arc::new(sessions);
+
+    // Process each session in parallel
+    let results: Vec<_> = arc_sessions.par_iter().zip(tcodes.par_iter()).map(|(session, tcode)| {
+        match session.inner.lock() {
+            Ok(guard) => match test_single_tcode(&*guard, tcode) {
+                Ok(_) => Ok(format!("Transaction successful for {}", tcode)),
+                Err(e) => Err(format!("Error executing transaction for {}: {}", tcode, e)),
+            },
+            Err(_) => Err("Mutex is poisoned".to_string()),
+        }
+    }).collect();
+
+    // Check results and decide on the outcome
+    results.into_iter().find(|result| result.is_err()).unwrap_or(Ok("error, in results?".to_string())).map(|_| ())
+
+}
+
+// test_single_tcode
+pub fn test_single_tcode(session: &GuiSession, tcode: &String) -> Result<(), String> {
+    let (_, t) = start_user_tcode(session, tcode.to_owned(), Some(false)).expect("Error starting tcode");
+        
+    let info = get_session_info(session).expect("Error getting session info");
+    println!("Current tcode: {:?}", info.transaction());
+    println!("Current screen: {:?}", info.screen_number());
+    println!("Current user: {:?}", info.user());
+        
+    let w1 = get_main_window(session).expect("Error getting main window");
+
+    // if tcode changed, do something
+    if &t != tcode {
+        println!("tcode changed from {} to {}", tcode, t);
+        println!("finding by name");
+    };
+
+    // ask execute?
+    // prompt_execute(&w1, 8)?;
+    send_vkey_main(&w1, 8).expect("error handling message");
+    handle_status_message(&session).expect("error handling message");
+
+    send_vkey_main(&w1, 8).expect("error handling message");
+    handle_status_message(&session).expect("error handling message");
+
+    Ok(())
+}
 
 // start async
-
-pub async fn multi_tcode(conn: Arc<GuiConnection>, starting_idx: i32) -> Result<()> {
+pub async fn multi_tcode(conn: Arc<GuiConnection>, starting_idx: i32) -> Result<(), String> {
     let s1 = Arc::new(create_or_get_session_async(&conn, 1).await.expect("Error creating session"));
     let s2 = Arc::new(create_or_get_session_async(&conn, 2).await.expect("Error creating session"));
 
@@ -27,7 +102,7 @@ pub async fn multi_tcode(conn: Arc<GuiConnection>, starting_idx: i32) -> Result<
     Ok(())
 }
 
-pub async fn run_test_tcode(session: Arc<GuiSession>, con: Arc<GuiConnection>, idx: i32) -> Result<()> {
+pub async fn run_test_tcode(session: Arc<GuiSession>, con: Arc<GuiConnection>, idx: i32) -> Result<(), String> {
     let tcode = "zmdetpc";
     let (_, t) = start_user_tcode(&session, tcode.to_owned(), Some(false)).expect("Error starting tcode");
         
@@ -62,8 +137,8 @@ pub async fn run_test_tcode(session: Arc<GuiSession>, con: Arc<GuiConnection>, i
 
     // ask execute?
     // prompt_execute(&w1, 8)?;
-    send_vkey_main(&w1, 8)?;
-    handle_status_message(&session)?;
+    send_vkey_main(&w1, 8).expect("error handling message");
+    handle_status_message(&*session).expect("error handling message");
 
     // get values from table
     let headers = vec![

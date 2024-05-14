@@ -54,10 +54,11 @@ fn main() -> crate::Result<()> {
     if run_test {
         // test stuff?
         let result = async {
-            test_func::run_test_tcode(s1.into(), conn, 1).await.expect("Error running test tcode");
+            // test_func::parallel_tcodes(&*conn, 1).expect("error running parallel");
+            test_func::run_test_tcode(s1.into(), conn,1).await.expect("Error running test tcode");
         };
         // run block using executor
-        let mut rt = Runtime::new().unwrap();
+        let rt = Runtime::new().unwrap();
         rt.block_on(result);
 
     } else {
