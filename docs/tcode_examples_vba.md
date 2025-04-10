@@ -845,3 +845,66 @@ run_check = check_tcode(sess, tCode)
 errlv:
 ZVT11_From_Deliv = False
 End Function
+
+Function assert_slim_format(ByVal s As Object) As Boolean
+
+    ' Change screen format if necessary
+    Dim current_format
+    current_format = get_screen_format(s)
+    If current_format <> sap_format_slim Then
+        Evaluate set_screen_format(s, sap_format_slim)
+    End If
+
+
+End Function
+
+Function set_screen_format(ByVal s As Object, ByVal screen_format As Variant) As Boolean
+Dim tCode, current_tcode, err_msg
+tCode = "lm00"
+
+    With s
+        ' Get Current Transaction
+        current_tcode = .Info.Transaction
+        ' Check Format
+        .StartTransaction tCode
+        .FindById("wnd[0]/usr/txtLOGON_DATA-DEVTY").text = screen_format
+        .FindById("wnd[0]").SendVKey 1
+        ' Set Transaction as it was
+        .StartTransaction current_tcode
+    End With
+
+    ' Check for msg in status bar
+    err_msg = Hit_Ctrl(session, 0, "/sbar", "Text", "Get", "")
+    ' if message is about currently in use, add msg
+    If Len(err_msg) > 0 Then
+        dbLog.log "Statusbar Error: " & err_msg
+        GoTo errlv
+    Else
+        dbLog.log "Screen format set to: " & screen_format
+        set_screen_format = True
+    End If
+
+Exit Function
+
+errlv:
+
+End Function
+
+Function get_screen_format(ByVal s As Object) As Variant
+Dim tCode, current_tcode
+tCode = "lm00"
+
+    With s
+        ' Get Current Transaction
+        current_tcode = .Info.Transaction
+        ' Check Format
+        .StartTransaction tCode
+        get_screen_format = .FindById("wnd[0]/usr/txtLOGON_DATA-DEVTY").text
+        dbLog.log "Current screen format: " & get_screen_format
+        ' Set Transaction as it was
+        If Not current_tcode = "SESSION_MANAGER" Then
+            .StartTransaction current_tcode
+        End If
+    End With
+
+End Function
